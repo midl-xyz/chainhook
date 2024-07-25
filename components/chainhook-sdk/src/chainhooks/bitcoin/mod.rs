@@ -5,7 +5,7 @@ use super::types::{
 };
 use crate::utils::Context;
 
-use bitcoincore_rpc_json::bitcoin::{address::Payload, Address};
+use bitcoincore_rpc_json::bitcoin::Address;
 use chainhook_types::{
     BitcoinBlockData, BitcoinChainEvent, BitcoinTransactionData, BlockIdentifier,
     StacksBaseChainOperation, TransactionIdentifier,
@@ -441,8 +441,8 @@ impl BitcoinPredicateType {
                 let address = match Address::from_str(encoded_address) {
                     Ok(address) => {
                         let checked_address = address.assume_checked();
-                        match checked_address.payload() {
-                            Payload::WitnessProgram(_) => checked_address,
+                        match checked_address.witness_program() {
+                            Some(_) => checked_address,
                             _ => return false,
                         }
                     }

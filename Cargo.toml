@@ -10,3 +10,43 @@ resolver = "2"
 [patch.crates-io]
 stacks-codec = { git = "https://github.com/hirosystems/clarinet.git" }
 # stacks-codec = { path = "../clarinet/components/stacks-codec" }
+
+[patch.crates-io.bitcoincore-rpc]
+git = "https://github.com/midl-xyz/rust-bitcoincore-rpc.git"
+branch = "testnet-v4"
+
+[patch.crates-io.bitcoincore-rpc-json]
+git = "https://github.com/midl-xyz/rust-bitcoincore-rpc.git"
+branch = "testnet-v4"
+
+[patch.crates-io.bitcoin-addresses]
+git = "https://github.com/midl-xyz/rust-bitcoin.git"
+branch = "testnet4"
+
+[patch.crates-io.base58ck]
+git = "https://github.com/midl-xyz/rust-bitcoin.git"
+branch = "testnet4"
+
+[patch.crates-io.bitcoin]
+git = "https://github.com/midl-xyz/rust-bitcoin.git"
+branch = "testnet4"
+
+[patch.crates-io.bitcoin_hashes]
+git = "https://github.com/midl-xyz/rust-bitcoin.git"
+branch = "testnet4"
+
+[patch.crates-io.bitcoin-internals]
+git = "https://github.com/midl-xyz/rust-bitcoin.git"
+branch = "testnet4"
+
+[patch.crates-io.bitcoin-io]
+git = "https://github.com/midl-xyz/rust-bitcoin.git"
+branch = "testnet4"
+
+[patch.crates-io.bitcoin-primitives]
+git = "https://github.com/midl-xyz/rust-bitcoin.git"
+branch = "testnet4"
+
+[patch.crates-io.bitcoin-units]
+git = "https://github.com/midl-xyz/rust-bitcoin.git"
+branch = "testnet4"
