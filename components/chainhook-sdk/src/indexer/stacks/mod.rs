@@ -1,7 +1,7 @@
 mod blocks_pool;
 
 pub use blocks_pool::StacksBlockPool;
-use stacks_codec::codec::{StacksTransaction, TransactionAuth, TransactionPayload};
+use stacks_codec::codec::{StacksMessageCodec, StacksTransaction, TransactionAuth, TransactionPayload};
 
 use crate::chainhooks::stacks::try_decode_clarity_value;
 use crate::indexer::AssetClassCache;
@@ -11,8 +11,7 @@ use chainhook_types::*;
 use hiro_system_kit::slog;
 use rocket::serde::json::Value as JsonValue;
 use rocket::serde::Deserialize;
-use stacks_codec::clarity::codec::StacksMessageCodec;
-use stacks_codec::clarity::vm::types::{SequenceData, Value as ClarityValue};
+use clarity::vm::types::{SequenceData, Value as ClarityValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryInto;
 use std::io::Cursor;

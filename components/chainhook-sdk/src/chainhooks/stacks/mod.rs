@@ -15,14 +15,13 @@ use regex::Regex;
 use reqwest::{Client, Method};
 use schemars::JsonSchema;
 use serde_json::Value as JsonValue;
-use stacks_codec::clarity::codec::StacksMessageCodec;
-use stacks_codec::clarity::vm::types::PrincipalData;
-use stacks_codec::clarity::vm::types::QualifiedContractIdentifier;
-use stacks_codec::clarity::vm::types::{CharType, SequenceData, Value as ClarityValue};
-use stacks_codec::clarity::ClarityName;
+use clarity::codec::StacksMessageCodec;
+use clarity::vm::types::PrincipalData;
+use clarity::vm::types::QualifiedContractIdentifier;
+use clarity::vm::types::{CharType, SequenceData, Value as ClarityValue};
 use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
-
+use clarity::vm::ClarityName;
 use reqwest::RequestBuilder;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema)]
