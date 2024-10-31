@@ -7,10 +7,11 @@ use crate::service::{
     http_api::start_predicate_api_server, update_predicate_spec, update_predicate_status,
     PredicateStatus, Service,
 };
+use chainhook_sdk::chainhooks::types::PoxConfig;
+use chainhook_sdk::observer::PredicatesConfig;
 use chainhook_sdk::{
-    chainhooks::types::{
-        ChainhookFullSpecification, ChainhookSpecification, StacksChainhookFullSpecification,
-    },
+    chainhooks::stacks::StacksChainhookSpecificationNetworkMap,
+    chainhooks::types::{ChainhookInstance, ChainhookSpecificationNetworkMap},
     indexer::IndexerConfig,
     observer::ObserverCommand,
     types::{BitcoinBlockSignaling, BitcoinNetwork, Chain, StacksNetwork, StacksNodeConfig},
@@ -42,20 +43,20 @@ pub async fn get_predicate_status(uuid: &str, port: u16) -> Result<PredicateStat
                 Some(result) => match result.get("status") {
                     Some(status) => {
                         return serde_json::from_value(status.clone())
-                            .map_err(|e| format!("failed to parse status {}", e.to_string()));
+                            .map_err(|e| format!("failed to parse status {}", e));
                     }
-                    None => return Err(format!("no status field on get predicate result")),
+                    None => return Err("no status field on get predicate result".to_string()),
                 },
                 None => {
                     attempts += 1;
                     if attempts == 10 {
-                        return Err(format!("no result field on get predicate response"));
+                        return Err("no result field on get predicate response".to_string());
                     } else {
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
                 }
             },
-            None => return Err(format!("failed to parse get predicate response")),
+            None => return Err("failed to parse get predicate response".to_string()),
         }
     }
 }
@@ -82,14 +83,12 @@ pub async fn filter_predicate_status_from_all_predicates(
                         match matching_predicate {
                             Some(predicate) => match predicate.get("status") {
                                 Some(status) => {
-                                    return serde_json::from_value(status.clone()).map_err(|e| {
-                                        format!("failed to parse status {}", e.to_string())
-                                    });
+                                    return serde_json::from_value(status.clone())
+                                        .map_err(|e| format!("failed to parse status {}", e));
                                 }
                                 None => {
-                                    return Err(format!(
-                                        "no status field on matching get predicates result"
-                                    ))
+                                    return Err("no status field on matching get predicates result"
+                                        .to_string())
                                 }
                             },
                             None => {
@@ -100,21 +99,21 @@ pub async fn filter_predicate_status_from_all_predicates(
                         }
                     }
                     None => {
-                        return Err(format!(
-                            "failed to parse get predicate response's result field"
-                        ))
+                        return Err(
+                            "failed to parse get predicate response's result field".to_string()
+                        )
                     }
                 },
                 None => {
                     attempts += 1;
                     if attempts == 10 {
-                        return Err(format!("no result field on get predicates response"));
+                        return Err("no result field on get predicates response".to_string());
                     } else {
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
                 }
             },
-            None => return Err(format!("failed to parse get predicate response")),
+            None => return Err("failed to parse get predicate response".to_string()),
         }
     }
 }
@@ -181,8 +180,8 @@ pub async fn call_ping(port: u16) -> Result<JsonValue, String> {
     let res = call_observer_svc(&url, Method::GET, None).await?;
     match res.get("result") {
         Some(result) => serde_json::from_value(result.clone())
-            .map_err(|e| format!("failed to parse observer metrics {}", e.to_string())),
-        None => Err(format!("Failed parse result of observer ping")),
+            .map_err(|e| format!("failed to parse observer metrics {}", e)),
+        None => Err("Failed parse result of observer ping".to_string()),
     }
 }
 
@@ -242,7 +241,7 @@ pub async fn start_redis(port: u16) -> Result<Child, String> {
         .arg(format!("--port {port}"))
         .stdout(Stdio::null())
         .spawn()
-        .map_err(|e| format!("failed to create start-redis command: {}", e.to_string()))?;
+        .map_err(|e| format!("failed to create start-redis command: {}", e))?;
     let mut attempts = 0;
     loop {
         match redis::Client::open(format!("redis://localhost:{port}/")) {
@@ -251,7 +250,7 @@ pub async fn start_redis(port: u16) -> Result<Child, String> {
                 Err(e) => {
                     attempts += 1;
                     if attempts == 10 {
-                        return Err(format!("failed to start redis service: {}", e.to_string()));
+                        return Err(format!("failed to start redis service: {}", e));
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await
                 }
@@ -259,7 +258,7 @@ pub async fn start_redis(port: u16) -> Result<Child, String> {
             Err(e) => {
                 attempts += 1;
                 if attempts == 10 {
-                    return Err(format!("failed to start redis service: {}", e.to_string()));
+                    return Err(format!("failed to start redis service: {}", e));
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await
             }
@@ -271,11 +270,7 @@ pub fn flush_redis(port: u16) {
     let client = redis::Client::open(format!("redis://localhost:{port}/"))
         .expect("unable to connect to redis");
     let mut predicate_db_conn = client.get_connection().expect("unable to connect to redis");
-    let db_keys: Vec<String> = predicate_db_conn
-        .scan_match("*")
-        .unwrap()
-        .into_iter()
-        .collect();
+    let db_keys: Vec<String> = predicate_db_conn.scan_match("*").unwrap().collect();
     for k in db_keys {
         predicate_db_conn.del::<_, ()>(&k).unwrap();
     }
@@ -298,6 +293,8 @@ pub fn get_chainhook_config(
     };
     Config {
         http_api: PredicatesApi::On(api_config),
+        predicates: PredicatesConfig::default(),
+        pox_config: PoxConfig::devnet_default(),
         storage: StorageConfig {
             working_dir: working_dir.into(),
         },
@@ -333,7 +330,7 @@ pub fn get_chainhook_config(
 pub async fn start_chainhook_service(
     config: Config,
     ping_startup_port: u16,
-    startup_predicates: Option<Vec<ChainhookFullSpecification>>,
+    startup_predicates: Option<Vec<ChainhookSpecificationNetworkMap>>,
     ctx: &Context,
 ) -> Result<Sender<ObserverCommand>, String> {
     let mut service = Service::new(config, ctx.clone());
@@ -342,24 +339,19 @@ pub async fn start_chainhook_service(
     let _ = hiro_system_kit::thread_named("Chainhook service")
         .spawn(move || {
             let future = service.run(
-                startup_predicates.unwrap_or(vec![]),
+                startup_predicates.unwrap_or_default(),
                 Some((moved_observer_command_tx, observer_command_rx)),
             );
             let _ = hiro_system_kit::nestable_block_on(future);
         })
-        .map_err(|e| {
-            format!(
-                "failed to start chainhook service thread, {}",
-                e.to_string()
-            )
-        })?;
+        .map_err(|e| format!("failed to start chainhook service thread, {}", e))?;
 
     // Loop to check if the server is ready
     let mut attempts = 0;
     const MAX_ATTEMPTS: u32 = 10;
     loop {
         if attempts >= MAX_ATTEMPTS {
-            return Err(format!("failed to ping chainhook service"));
+            return Err("failed to ping chainhook service".to_string());
         }
 
         if let Ok(_client) = reqwest::Client::new()
@@ -389,8 +381,8 @@ pub struct TestSetupResult {
 
 pub async fn setup_stacks_chainhook_test(
     starting_chain_tip: u64,
-    redis_seed: Option<(StacksChainhookFullSpecification, PredicateStatus)>,
-    startup_predicates: Option<Vec<ChainhookFullSpecification>>,
+    redis_seed: Option<(StacksChainhookSpecificationNetworkMap, PredicateStatus)>,
+    startup_predicates: Option<Vec<ChainhookSpecificationNetworkMap>>,
 ) -> TestSetupResult {
     let (
         redis_port,
@@ -426,14 +418,14 @@ pub async fn setup_stacks_chainhook_test(
             panic!("test failed with error: {e}");
         });
         let stacks_spec = predicate
-            .into_selected_network_specification(&StacksNetwork::Devnet)
+            .into_specification_for_network(&StacksNetwork::Devnet)
             .unwrap_or_else(|e| {
                 flush_redis(redis_port);
                 redis_process.kill().unwrap();
                 panic!("test failed with error: {e}");
             });
 
-        let spec = ChainhookSpecification::Stacks(stacks_spec);
+        let spec = ChainhookInstance::Stacks(stacks_spec);
         update_predicate_spec(&spec.key(), &spec, &mut connection, &ctx);
         update_predicate_status(&spec.key(), status, &mut connection, &ctx);
     }
@@ -524,7 +516,7 @@ pub async fn setup_bitcoin_chainhook_test(starting_chain_tip: u64) -> TestSetupR
     let _ = hiro_system_kit::thread_named("Bitcoin rpc service")
         .spawn(move || {
             let future = mock_bitcoin_rpc(bitcoin_rpc_port, starting_chain_tip);
-            let _ = hiro_system_kit::nestable_block_on(future);
+            hiro_system_kit::nestable_block_on(future);
         })
         .expect("unable to spawn thread");
 

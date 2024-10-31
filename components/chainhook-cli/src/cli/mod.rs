@@ -11,16 +11,19 @@ use crate::storage::{
     delete_confirmed_entry_from_stacks_blocks, delete_unconfirmed_entry_from_stacks_blocks,
     get_last_block_height_inserted, get_last_unconfirmed_block_height_inserted,
     get_stacks_block_at_block_height, insert_unconfirmed_entry_in_stacks_blocks,
-    is_stacks_block_present, open_readonly_stacks_db_conn, open_readwrite_stacks_db_conn,
-    set_last_confirmed_insert_key,
+    is_stacks_block_present, open_readonly_stacks_db_conn, open_readonly_stacks_db_conn_with_retry,
+    open_readwrite_stacks_db_conn, set_last_confirmed_insert_key,
 };
-
-use chainhook_sdk::chainhooks::types::{
-    BitcoinChainhookFullSpecification, BitcoinChainhookNetworkSpecification, BitcoinPredicateType,
-    ChainhookFullSpecification, FileHook, HookAction, InscriptionFeedData, OrdinalOperations,
-    StacksChainhookFullSpecification, StacksChainhookNetworkSpecification, StacksPredicate,
-    StacksPrintEventBasedPredicate,
-};
+use chainhook_sdk::chainhooks::bitcoin::BitcoinChainhookSpecification;
+use chainhook_sdk::chainhooks::bitcoin::BitcoinChainhookSpecificationNetworkMap;
+use chainhook_sdk::chainhooks::bitcoin::BitcoinPredicateType;
+use chainhook_sdk::chainhooks::bitcoin::InscriptionFeedData;
+use chainhook_sdk::chainhooks::bitcoin::OrdinalOperations;
+use chainhook_sdk::chainhooks::stacks::StacksChainhookSpecification;
+use chainhook_sdk::chainhooks::stacks::StacksChainhookSpecificationNetworkMap;
+use chainhook_sdk::chainhooks::stacks::StacksPredicate;
+use chainhook_sdk::chainhooks::stacks::StacksPrintEventBasedPredicate;
+use chainhook_sdk::chainhooks::types::{ChainhookSpecificationNetworkMap, FileHook, HookAction};
 use chainhook_sdk::types::{BitcoinNetwork, BlockIdentifier, StacksNetwork};
 use chainhook_sdk::utils::{BlockHeights, Context};
 use clap::{Parser, Subcommand};
@@ -48,10 +51,10 @@ enum Command {
     /// Run a service streaming blocks and evaluating registered predicates
     #[clap(subcommand)]
     Service(ServiceCommand),
-    /// Stacks related subcommands  
+    /// Stacks related subcommands
     #[clap(subcommand)]
     Stacks(StacksCommand),
-    /// Generate documentation  
+    /// Generate documentation
     #[clap(subcommand)]
     Docs(DocsCommand),
 }
@@ -322,17 +325,14 @@ pub fn main() {
     let opts: Opts = match Opts::try_parse() {
         Ok(opts) => opts,
         Err(e) => {
-            crit!(ctx.expect_logger(), "{e}");
+            println!("{}", e);
             process::exit(1);
         }
     };
 
-    match hiro_system_kit::nestable_block_on(handle_command(opts, ctx.clone())) {
-        Err(e) => {
-            crit!(ctx.expect_logger(), "{e}");
-            process::exit(1);
-        }
-        Ok(_) => {}
+    if let Err(e) = hiro_system_kit::nestable_block_on(handle_command(opts, ctx.clone())) {
+        crit!(ctx.expect_logger(), "{e}");
+        process::exit(1);
     }
 }
 
@@ -351,7 +351,7 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
                     .predicates_paths
                     .iter()
                     .map(|p| load_predicate_from_path(p))
-                    .collect::<Result<Vec<ChainhookFullSpecification>, _>>()?;
+                    .collect::<Result<Vec<ChainhookSpecificationNetworkMap>, _>>()?;
 
                 info!(ctx.expect_logger(), "Starting service...",);
 
@@ -384,7 +384,7 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
                     (true, false) => {
                         let mut networks = BTreeMap::new();
 
-                        networks.insert(StacksNetwork::Testnet, StacksChainhookNetworkSpecification {
+                        networks.insert(StacksNetwork::Testnet, StacksChainhookSpecification {
                             start_block: Some(34239),
                             end_block: Some(50000),
                             blocks: None,
@@ -401,7 +401,7 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
                             })
                         });
 
-                        networks.insert(StacksNetwork::Mainnet, StacksChainhookNetworkSpecification {
+                        networks.insert(StacksNetwork::Mainnet, StacksChainhookSpecification {
                             start_block: Some(34239),
                             end_block: Some(50000),
                             blocks: None,
@@ -418,20 +418,22 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
                             })
                         });
 
-                        ChainhookFullSpecification::Stacks(StacksChainhookFullSpecification {
-                            uuid: id.to_string(),
-                            owner_uuid: None,
-                            name: "Hello world".into(),
-                            version: 1,
-                            networks,
-                        })
+                        ChainhookSpecificationNetworkMap::Stacks(
+                            StacksChainhookSpecificationNetworkMap {
+                                uuid: id.to_string(),
+                                owner_uuid: None,
+                                name: "Hello world".into(),
+                                version: 1,
+                                networks,
+                            },
+                        )
                     }
                     (false, true) => {
                         let mut networks = BTreeMap::new();
 
                         networks.insert(
                             BitcoinNetwork::Mainnet,
-                            BitcoinChainhookNetworkSpecification {
+                            BitcoinChainhookSpecification {
                                 start_block: Some(767430),
                                 end_block: Some(767430),
                                 blocks: None,
@@ -451,13 +453,15 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
                             },
                         );
 
-                        ChainhookFullSpecification::Bitcoin(BitcoinChainhookFullSpecification {
-                            uuid: id.to_string(),
-                            owner_uuid: None,
-                            name: "Hello world".into(),
-                            version: 1,
-                            networks,
-                        })
+                        ChainhookSpecificationNetworkMap::Bitcoin(
+                            BitcoinChainhookSpecificationNetworkMap {
+                                uuid: id.to_string(),
+                                owner_uuid: None,
+                                name: "Hello world".into(),
+                                version: 1,
+                                networks,
+                            },
+                        )
                     }
                     _ => {
                         return Err("command `predicates new` should either provide the flag --stacks or --bitcoin".into());
@@ -474,7 +478,7 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
                             // need to create
                             if let Some(dirp) = PathBuf::from(&path).parent() {
                                 std::fs::create_dir_all(dirp).unwrap_or_else(|e| {
-                                    println!("{}", e.to_string());
+                                    println!("{}", e);
                                 });
                             }
                             let mut f = std::fs::OpenOptions::new()
@@ -482,7 +486,7 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
                                 .create(true)
                                 .truncate(true)
                                 .open(&path)
-                                .map_err(|e| format!("{}", e.to_string()))?;
+                                .map_err(|e| format!("{}", e))?;
                             use std::io::Write;
                             let _ = f.write_all(content.as_bytes());
                         } else {
@@ -499,10 +503,11 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
                 let mut config =
                     Config::default(false, cmd.testnet, cmd.mainnet, &cmd.config_path)?;
                 let predicate = load_predicate_from_path(&cmd.predicate_path)?;
+                predicate.validate()?;
                 match predicate {
-                    ChainhookFullSpecification::Bitcoin(predicate) => {
+                    ChainhookSpecificationNetworkMap::Bitcoin(predicate) => {
                         let predicate_spec = match predicate
-                            .into_selected_network_specification(&config.network.bitcoin_network)
+                            .into_specification_for_network(&config.network.bitcoin_network)
                         {
                             Ok(predicate) => predicate,
                             Err(e) => {
@@ -517,13 +522,14 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
                             &predicate_spec,
                             None,
                             &config,
+                            None,
                             &ctx,
                         )
                         .await?;
                     }
-                    ChainhookFullSpecification::Stacks(predicate) => {
+                    ChainhookSpecificationNetworkMap::Stacks(predicate) => {
                         let predicate_spec = match predicate
-                            .into_selected_network_specification(&config.network.stacks_network)
+                            .into_specification_for_network(&config.network.stacks_network)
                         {
                             Ok(predicate) => predicate,
                             Err(e) => {
@@ -534,17 +540,24 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
                             }
                         };
                         match open_readonly_stacks_db_conn(&config.expected_cache_path(), &ctx) {
-                            Ok(db_conn) => {
+                            Ok(_) => {
                                 let _ = consolidate_local_stacks_chainstate_using_csv(
                                     &mut config,
                                     &ctx,
                                 )
                                 .await;
+                                // Refresh DB connection so it picks up recent changes made by TSV consolidation.
+                                let new_conn = open_readonly_stacks_db_conn_with_retry(
+                                    &config.expected_cache_path(),
+                                    5,
+                                    &ctx,
+                                )?;
                                 scan_stacks_chainstate_via_rocksdb_using_predicate(
                                     &predicate_spec,
                                     None,
-                                    &db_conn,
+                                    &new_conn,
                                     &config,
+                                    None,
                                     &ctx,
                                 )
                                 .await?;
@@ -567,13 +580,14 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
             }
             PredicatesCommand::Check(cmd) => {
                 let config = Config::default(false, cmd.testnet, cmd.mainnet, &cmd.config_path)?;
-                let predicate: ChainhookFullSpecification =
+                let predicate: ChainhookSpecificationNetworkMap =
                     load_predicate_from_path(&cmd.predicate_path)?;
+                predicate.validate()?;
 
                 match predicate {
-                    ChainhookFullSpecification::Bitcoin(predicate) => {
+                    ChainhookSpecificationNetworkMap::Bitcoin(predicate) => {
                         let _ = match predicate
-                            .into_selected_network_specification(&config.network.bitcoin_network)
+                            .into_specification_for_network(&config.network.bitcoin_network)
                         {
                             Ok(predicate) => predicate,
                             Err(e) => {
@@ -584,9 +598,9 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
                             }
                         };
                     }
-                    ChainhookFullSpecification::Stacks(predicate) => {
+                    ChainhookSpecificationNetworkMap::Stacks(predicate) => {
                         let _ = match predicate
-                            .into_selected_network_specification(&config.network.stacks_network)
+                            .into_specification_for_network(&config.network.stacks_network)
                         {
                             Ok(predicate) => predicate,
                             Err(e) => {
@@ -864,15 +878,15 @@ async fn handle_command(opts: Opts, ctx: Context) -> Result<(), String> {
 
 pub fn load_predicate_from_path(
     predicate_path: &str,
-) -> Result<ChainhookFullSpecification, String> {
-    let file = std::fs::File::open(&predicate_path)
+) -> Result<ChainhookSpecificationNetworkMap, String> {
+    let file = std::fs::File::open(predicate_path)
         .map_err(|e| format!("unable to read file {}\n{:?}", predicate_path, e))?;
     let mut file_reader = BufReader::new(file);
     let mut file_buffer = vec![];
     file_reader
         .read_to_end(&mut file_buffer)
         .map_err(|e| format!("unable to read file {}\n{:?}", predicate_path, e))?;
-    let predicate: ChainhookFullSpecification = serde_json::from_slice(&file_buffer)
+    let predicate: ChainhookSpecificationNetworkMap = serde_json::from_slice(&file_buffer)
         .map_err(|e| format!("unable to parse json file {}\n{:?}", predicate_path, e))?;
     Ok(predicate)
 }

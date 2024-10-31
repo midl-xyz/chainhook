@@ -1,8 +1,9 @@
 pub mod file;
 pub mod generator;
 
+use chainhook_sdk::chainhooks::types::{ChainhookStore, PoxConfig};
 pub use chainhook_sdk::indexer::IndexerConfig;
-use chainhook_sdk::observer::EventObserverConfig;
+use chainhook_sdk::observer::{EventObserverConfig, PredicatesConfig};
 use chainhook_sdk::types::{
     BitcoinBlockSignaling, BitcoinNetwork, StacksNetwork, StacksNodeConfig,
 };
@@ -27,7 +28,9 @@ pub const BITCOIN_MAX_PREDICATE_REGISTRATION: usize = 50;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub storage: StorageConfig,
+    pub pox_config: PoxConfig,
     pub http_api: PredicatesApi,
+    pub predicates: PredicatesConfig,
     pub event_sources: Vec<EventSourceConfig>,
     pub limits: LimitsConfig,
     pub network: IndexerConfig,
@@ -98,7 +101,7 @@ impl Config {
         let config_file: ConfigFile = match toml::from_slice(&file_buffer) {
             Ok(s) => s,
             Err(e) => {
-                return Err(format!("Config file malformatted {}", e.to_string()));
+                return Err(format!("Config file malformatted {}", e));
             }
         };
         Config::from_config_file(config_file)
@@ -114,17 +117,17 @@ impl Config {
     pub fn get_event_observer_config(&self) -> EventObserverConfig {
         EventObserverConfig {
             bitcoin_rpc_proxy_enabled: true,
-            chainhook_config: None,
-            ingestion_port: DEFAULT_INGESTION_PORT,
+            registered_chainhooks: ChainhookStore::new(),
+            predicates_config: PredicatesConfig {
+                payload_http_request_timeout_ms: self.predicates.payload_http_request_timeout_ms,
+            },
             bitcoind_rpc_username: self.network.bitcoind_rpc_username.clone(),
             bitcoind_rpc_password: self.network.bitcoind_rpc_password.clone(),
             bitcoind_rpc_url: self.network.bitcoind_rpc_url.clone(),
             bitcoin_block_signaling: self.network.bitcoin_block_signaling.clone(),
-            display_logs: false,
-            cache_path: self.storage.working_dir.clone(),
+            display_stacks_ingestion_logs: false,
             bitcoin_network: self.network.bitcoin_network.clone(),
             stacks_network: self.network.stacks_network.clone(),
-            data_handler_tx: None,
             prometheus_monitoring_port: self.monitoring.prometheus_monitoring_port,
         }
     }
@@ -138,7 +141,7 @@ impl Config {
         };
 
         let mut event_sources = vec![];
-        for source in config_file.event_source.unwrap_or(vec![]).iter_mut() {
+        for source in config_file.event_source.unwrap_or_default().iter_mut() {
             if let Some(dst) = source.tsv_file_path.take() {
                 let mut file_path = PathBuf::new();
                 file_path.push(dst);
@@ -155,9 +158,31 @@ impl Config {
         } else {
             None
         };
+        let default_pox_config = match stacks_network {
+            StacksNetwork::Mainnet => PoxConfig::mainnet_default(),
+            StacksNetwork::Devnet => PoxConfig::testnet_default(),
+            _ => PoxConfig::default(),
+        };
         let config = Config {
             storage: StorageConfig {
                 working_dir: config_file.storage.working_dir.unwrap_or("cache".into()),
+            },
+            pox_config: match config_file.pox_config {
+                None => default_pox_config,
+                Some(pox_config) => PoxConfig {
+                    first_burnchain_block_height: pox_config
+                        .first_burnchain_block_height
+                        .unwrap_or(default_pox_config.first_burnchain_block_height),
+                    prepare_phase_len: pox_config
+                        .prepare_phase_len
+                        .unwrap_or(default_pox_config.prepare_phase_len),
+                    reward_phase_len: pox_config
+                        .reward_phase_len
+                        .unwrap_or(default_pox_config.reward_phase_len),
+                    rewarded_addresses_per_block: pox_config
+                        .rewarded_addresses_per_block
+                        .unwrap_or(default_pox_config.rewarded_addresses_per_block),
+                },
             },
             http_api: match config_file.http_api {
                 None => PredicatesApi::Off,
@@ -170,6 +195,14 @@ impl Config {
                             .database_uri
                             .unwrap_or(DEFAULT_REDIS_URI.to_string()),
                     }),
+                },
+            },
+            predicates: match config_file.predicates {
+                None => PredicatesConfig {
+                    payload_http_request_timeout_ms: None,
+                },
+                Some(predicates) => PredicatesConfig {
+                    payload_http_request_timeout_ms: predicates.payload_http_request_timeout_ms,
                 },
             },
             event_sources,
@@ -235,7 +268,7 @@ impl Config {
                 _ => {}
             }
         }
-        return false;
+        false
     }
 
     pub fn add_local_stacks_tsv_source(&mut self, file_path: &PathBuf) {
@@ -310,7 +343,7 @@ impl Config {
                 remote_tsv_present_locally = true;
             }
         }
-        rely_on_remote_tsv == true && remote_tsv_present_locally == false
+        rely_on_remote_tsv && !remote_tsv_present_locally
     }
 
     pub fn default(
@@ -323,7 +356,7 @@ impl Config {
             (true, false, false, _) => Config::devnet_default(),
             (false, true, false, _) => Config::testnet_default(),
             (false, false, true, _) => Config::mainnet_default(),
-            (false, false, false, Some(config_path)) => Config::from_file_path(&config_path)?,
+            (false, false, false, Some(config_path)) => Config::from_file_path(config_path)?,
             _ => Err("Invalid combination of arguments".to_string())?,
         };
         Ok(config)
@@ -334,7 +367,11 @@ impl Config {
             storage: StorageConfig {
                 working_dir: default_cache_path(),
             },
+            pox_config: PoxConfig::devnet_default(),
             http_api: PredicatesApi::Off,
+            predicates: PredicatesConfig {
+                payload_http_request_timeout_ms: None,
+            },
             event_sources: vec![],
             limits: LimitsConfig {
                 max_number_of_bitcoin_predicates: BITCOIN_MAX_PREDICATE_REGISTRATION,
@@ -366,7 +403,11 @@ impl Config {
             storage: StorageConfig {
                 working_dir: default_cache_path(),
             },
+            pox_config: PoxConfig::testnet_default(),
             http_api: PredicatesApi::Off,
+            predicates: PredicatesConfig {
+                payload_http_request_timeout_ms: None,
+            },
             event_sources: vec![EventSourceConfig::StacksTsvUrl(UrlConfig {
                 file_url: DEFAULT_TESTNET_STACKS_TSV_ARCHIVE.into(),
             })],
@@ -400,7 +441,11 @@ impl Config {
             storage: StorageConfig {
                 working_dir: default_cache_path(),
             },
+            pox_config: PoxConfig::mainnet_default(),
             http_api: PredicatesApi::Off,
+            predicates: PredicatesConfig {
+                payload_http_request_timeout_ms: None,
+            },
             event_sources: vec![EventSourceConfig::StacksTsvUrl(UrlConfig {
                 file_url: DEFAULT_MAINNET_STACKS_TSV_ARCHIVE.into(),
             })],
