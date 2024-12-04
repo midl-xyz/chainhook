@@ -14,19 +14,63 @@ use std::collections::VecDeque;
 
 use super::{EventObserverConfig, ObserverCommand};
 
-fn new_zmq_socket() -> Socket {
+pub struct ConfigZmqSocket<'a> {
+    /// Topics to subscribe to
+    subscribe_topics: &'a [&'a str],
+    /// Receive high water mark (0 for unlimited)
+    receive_hwm: i32,
+    /// Enable TCP keepalive 1 to enable, 0 to disable
+    tcp_keepalive: i32,
+    /// Start sending keepalive probes after this number of seconds
+    tcp_keepalive_idle: i32,
+    /// Send a keepalive probe every this number of seconds
+    tcp_keepalive_intvl: i32,
+    /// Number of keepalive probes to send before considering the connection dead
+    tcp_keepalive_cnt: i32,
+}
+
+pub const DEFAULT_CONFIG_ZMQ_SOCKET: ConfigZmqSocket = ConfigZmqSocket {
+    subscribe_topics: &["hashblock"],
+    receive_hwm: 0,
+    tcp_keepalive: 1,
+    // 5 minutes of waiting for keepalive response
+    tcp_keepalive_idle: 300,
+    // 2 hours of sending keepalive probes
+    tcp_keepalive_intvl: 60,
+    // 120 times
+    tcp_keepalive_cnt: 120,
+};
+
+pub const UPDATED_CONFIG_ZMQ_SOCKET: ConfigZmqSocket = ConfigZmqSocket {
+    subscribe_topics: &["hashblock"],
+    receive_hwm: 0,
+    tcp_keepalive: 1,
+    // 10 minutes of waiting for keepalive response
+    // 10 minutes is approximation of BTC block mining time
+    tcp_keepalive_idle: 600,
+    // 5 minutes of sending keepalive probes
+    tcp_keepalive_intvl: 20,
+    tcp_keepalive_cnt: 15,
+};
+
+fn new_zmq_socket(config: &ConfigZmqSocket) -> Socket {
     let context = zmq::Context::new();
     let socket = context.socket(zmq::SUB).unwrap();
-    assert!(socket.set_subscribe(b"hashblock").is_ok());
-    assert!(socket.set_rcvhwm(0).is_ok());
+    for topic in config.subscribe_topics {
+        assert!(socket.set_subscribe(topic.as_bytes()).is_ok());
+    }
+    assert!(socket.set_rcvhwm(config.receive_hwm).is_ok());
     // We override the OS default behavior:
-    assert!(socket.set_tcp_keepalive(1).is_ok());
-    // The keepalive routine will wait for 5 minutes
-    assert!(socket.set_tcp_keepalive_idle(300).is_ok());
-    // And then resend it every 60 seconds
-    assert!(socket.set_tcp_keepalive_intvl(60).is_ok());
-    // 120 times
-    assert!(socket.set_tcp_keepalive_cnt(120).is_ok());
+    assert!(socket.set_tcp_keepalive(config.tcp_keepalive).is_ok());
+    assert!(socket
+        .set_tcp_keepalive_idle(config.tcp_keepalive_idle)
+        .is_ok());
+    assert!(socket
+        .set_tcp_keepalive_intvl(config.tcp_keepalive_intvl)
+        .is_ok());
+    assert!(socket
+        .set_tcp_keepalive_cnt(config.tcp_keepalive_cnt)
+        .is_ok());
     socket
 }
 
@@ -50,7 +94,7 @@ pub async fn start_zeromq_runloop(
         )
     });
 
-    let mut socket = new_zmq_socket();
+    let mut socket = new_zmq_socket(&UPDATED_CONFIG_ZMQ_SOCKET);
     assert!(socket.connect(&bitcoind_zmq_url).is_ok());
     ctx.try_log(|logger| slog::info!(logger, "Waiting for ZMQ messages from bitcoind"));
 
@@ -63,7 +107,7 @@ pub async fn start_zeromq_runloop(
                 ctx.try_log(|logger| {
                     slog::error!(logger, "Unable to receive ZMQ message: {}", e.to_string())
                 });
-                socket = new_zmq_socket();
+                socket = new_zmq_socket(&UPDATED_CONFIG_ZMQ_SOCKET);
                 assert!(socket.connect(&bitcoind_zmq_url).is_ok());
                 continue;
             }
