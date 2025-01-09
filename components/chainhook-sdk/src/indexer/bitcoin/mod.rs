@@ -235,6 +235,68 @@ pub async fn retrieve_block_hash(
     Ok(block_hash)
 }
 
+pub async fn get_block_count_with_retry(
+    http_client: &HttpClient,
+    bitcoin_config: &BitcoinConfig,
+    ctx: &Context,
+) -> Result<u64, String> {
+    let mut errors_count = 0;
+    let max_retries = 10;
+
+    let block_count = loop {
+        match get_block_count(http_client, bitcoin_config, ctx).await {
+            Ok(result) => break result,
+            Err(e) => {
+                errors_count += 1;
+                if errors_count > 3 && errors_count < max_retries {
+                    ctx.try_log(|logger| {
+                        slog::warn!(
+                            logger,
+                            "unable to retrieve block count: will retry in a few seconds (attempt #{errors_count}). Error: {e}",
+                        )
+                    });
+                } else if errors_count == max_retries {
+                    return Err(format!(
+                        "unable to retrieve block count after {errors_count} attempts. Error: {e}"
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        }
+    };
+    Ok(block_count)
+}
+
+pub async fn get_block_count(
+    http_client: &HttpClient,
+    bitcoin_config: &BitcoinConfig,
+    _ctx: &Context,
+) -> Result<u64, String> {
+    let body = json!({
+        "jsonrpc": "1.0",
+        "id": "chainhook-cli",
+        "method": "getblockcount",
+        "params": []
+    });
+
+    let block_count = http_client
+        .post(&bitcoin_config.rpc_url)
+        .basic_auth(&bitcoin_config.username, Some(&bitcoin_config.password))
+        .header("Content-Type", "application/json")
+        .header("Host", &bitcoin_config.rpc_url[7..])
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("unable to send request ({})", e))?
+        .json::<bitcoincore_rpc::jsonrpc::Response>()
+        .await
+        .map_err(|e| format!("unable to parse response ({})", e))?
+        .result::<u64>()
+        .map_err(|e| format!("unable to parse response ({})", e))?;
+
+    Ok(block_count)
+}
+
 // not used internally by chainhook; exported for ordhook
 pub async fn try_download_block_bytes_with_retry(
     http_client: HttpClient,
@@ -627,7 +689,8 @@ fn try_parse_stacks_operation(
             if let Some(mining_post_commit) = outputs.get(mining_output_index) {
                 mining_sats_left = mining_post_commit.value.to_sat();
                 mining_address_post_commit = match mining_post_commit.script_pub_key.script() {
-                    Ok(script) => Address::from_script(&script, bitcoin::Network::Bitcoin).map(|a| a.to_string())
+                    Ok(script) => Address::from_script(&script, bitcoin::Network::Bitcoin)
+                        .map(|a| a.to_string())
                         .ok(),
                     Err(_) => None,
                 };

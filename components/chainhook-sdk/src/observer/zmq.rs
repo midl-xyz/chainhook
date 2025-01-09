@@ -1,18 +1,22 @@
-use chainhook_types::BitcoinBlockSignaling;
+use chainhook_types::{BitcoinBlockSignaling, BlockHeader};
 use hiro_system_kit::slog;
+use reqwest::Client as HttpClient;
 use std::sync::mpsc::Sender;
 use zmq::Socket;
 
 use crate::{
     indexer::{
-        bitcoin::{build_http_client, download_and_parse_block_with_retry},
-        fork_scratch_pad::ForkScratchPad,
+        bitcoin::{
+            build_http_client, download_and_parse_block_with_retry, get_block_count,
+            get_block_count_with_retry, retrieve_block_hash_with_retry,
+        },
+        fork_scratch_pad::{ForkScratchPad, CONFIRMED_SEGMENT_MINIMUM_LENGTH},
     },
     utils::Context,
 };
 use std::collections::VecDeque;
 
-use super::{EventObserverConfig, ObserverCommand};
+use super::{BitcoinConfig, EventObserverConfig, ObserverCommand};
 
 pub struct ConfigZmqSocket<'a> {
     /// Topics to subscribe to
@@ -99,6 +103,15 @@ pub async fn start_zeromq_runloop(
     ctx.try_log(|logger| slog::info!(logger, "Waiting for ZMQ messages from bitcoind"));
 
     let mut bitcoin_blocks_pool = ForkScratchPad::new();
+    initialize_recent_chain_state(
+        &http_client,
+        &bitcoin_config,
+        &mut bitcoin_blocks_pool,
+        &observer_commands_tx,
+        ctx,
+    )
+    .await
+    .unwrap();
 
     loop {
         let msg = match socket.recv_multipart(0) {
@@ -160,20 +173,12 @@ pub async fn start_zeromq_runloop(
             let _ = observer_commands_tx.send(ObserverCommand::ProcessBitcoinBlock(block));
 
             if bitcoin_blocks_pool.can_process_header(&header) {
-                match bitcoin_blocks_pool.process_header(header, ctx) {
-                    Ok(Some(event)) => {
-                        let _ = observer_commands_tx
-                            .send(ObserverCommand::PropagateBitcoinChainEvent(event));
-                    }
-                    Err(e) => {
-                        ctx.try_log(|logger| {
-                            slog::warn!(logger, "Unable to append block: {:?}", e)
-                        });
-                    }
-                    Ok(None) => {
-                        ctx.try_log(|logger| slog::warn!(logger, "Unable to append block"));
-                    }
-                }
+                process_and_propagate_header(
+                    header,
+                    &mut bitcoin_blocks_pool,
+                    &observer_commands_tx,
+                    ctx,
+                );
             } else {
                 // Handle a behaviour specific to ZMQ usage in bitcoind.
                 // Considering a simple re-org:
@@ -197,4 +202,72 @@ pub async fn start_zeromq_runloop(
             }
         }
     }
+}
+
+fn process_and_propagate_header(
+    header: BlockHeader,
+    bitcoin_blocks_pool: &mut ForkScratchPad,
+    observer_commands_tx: &Sender<ObserverCommand>,
+    ctx: &Context,
+) {
+    match bitcoin_blocks_pool.process_header(header, ctx) {
+        Ok(Some(event)) => {
+            let _ = observer_commands_tx.send(ObserverCommand::PropagateBitcoinChainEvent(event));
+        }
+        Err(e) => {
+            ctx.try_log(|logger| slog::warn!(logger, "Unable to append block: {:?}", e));
+        }
+        Ok(None) => {
+            ctx.try_log(|logger| slog::warn!(logger, "Unable to append block"));
+        }
+    }
+}
+
+async fn initialize_recent_chain_state(
+    http_client: &HttpClient,
+    bitcoin_config: &BitcoinConfig,
+    fork_scratch_pad: &mut ForkScratchPad,
+    observer_commands_tx: &Sender<ObserverCommand>,
+    ctx: &Context,
+) -> Result<(), String> {
+    ctx.try_log(|logger| {
+        slog::info!(
+            logger,
+            "Initializing bitcoin blocks pool with recent chain state",
+        )
+    });
+    let tip_height = get_block_count_with_retry(http_client, bitcoin_config, ctx).await?;
+
+    // Fetch last tip_height - CONFIRMED_SEGMENT_MINIMUM_LENGTH to tip_height blocks
+    for height in (tip_height.wrapping_sub(CONFIRMED_SEGMENT_MINIMUM_LENGTH as u64))..=tip_height {
+        let current_hash =
+            retrieve_block_hash_with_retry(http_client, &height, bitcoin_config, ctx).await?;
+        if let Ok(block) =
+            download_and_parse_block_with_retry(http_client, &current_hash, bitcoin_config, ctx)
+                .await
+        {
+            ctx.try_log(|logger| {
+                slog::info!(
+                    logger,
+                    "Appending block #{} to bitcoin blocks pool",
+                    block.height
+                )
+            });
+
+            match fork_scratch_pad.process_header(block.get_block_header(), ctx) {
+                Ok(Some(_event)) => {
+                    let _ = observer_commands_tx.send(ObserverCommand::ProcessBitcoinBlock(block));
+                }
+                Err(e) => {
+                    ctx.try_log(|logger| slog::warn!(logger, "Unable to append block: {:?}", e));
+                }
+                Ok(None) => {
+                    ctx.try_log(|logger| slog::warn!(logger, "Unable to append block"));
+                }
+            }
+        } else {
+            break;
+        }
+    }
+    Ok(())
 }
